@@ -374,6 +374,23 @@ class _ProxiesListViewState extends State<ProxiesListView> {
   }
 }
 
+class RemoveInvalidButton extends ConsumerWidget {
+  const RemoveInvalidButton({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return IconButton(
+      iconSize: 20,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.all(2),
+      onPressed: () async {
+        await globalState.appController.testAndRemoveInvalidProxies();
+      },
+      icon: const Icon(Icons.cleaning_services),
+      tooltip: 'Test & Remove Invalid Proxies',
+    );
+  }
+}
 class ListHeader extends StatefulWidget {
   final Group group;
 

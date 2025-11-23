@@ -10,6 +10,7 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
+import 'package:fl_clash/views/proxies/common.dart';
 import 'package:fl_clash/widgets/dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -1416,5 +1417,248 @@ class AppController {
     } finally {
       _ref.read(loadingProvider.notifier).value = false;
     }
+  }
+
+
+  // Replace these two methods in your AppController class
+
+  Future<void> removeInvalidProxies() async {
+    await safeRun(() async {
+      final currentProfile = _ref.read(currentProfileProvider);
+      if (currentProfile == null) {
+        throw Exception('No active profile');
+      }
+
+      // Get current groups to access all proxies
+      final groups = _ref.read(groupsProvider);
+      if (groups.isEmpty) {
+        throw Exception('No proxy groups found');
+      }
+
+      // Get delay data
+      final delayMap = _ref.read(delayDataSourceProvider);
+
+      // Collect all proxy names with invalid delays (timeout or null)
+      final Set<String> invalidProxyNames = {};
+
+      for (final group in groups) {
+        for (final proxy in group.all) {
+          final proxyName = proxy.name;
+          final delayValue = delayMap[proxyName];
+
+          // Consider proxy invalid if:
+          // 1. No delay data exists (null)
+          // 2. Delay is negative (timeout)
+          // 3. Delay is extremely high (> 5000ms)
+          if (delayValue == null) {
+            invalidProxyNames.add(proxyName);
+          } else {
+            final delay = delayValue; // This is Map<String, int?>
+            if (delay['value']! < 0 || delay['value']! > 5000) { // or whatever key contains the numeric value
+              invalidProxyNames.add(proxyName);
+            }
+          }
+        }
+      }
+
+      if (invalidProxyNames.isEmpty) {
+        globalState.showNotifier('No invalid proxies found');
+        return;
+      }
+
+      // Show confirmation dialog
+      final confirm = await globalState.showMessage(
+        title: 'Remove Invalid Proxies',
+        message: TextSpan(
+          children: [
+            TextSpan(text: 'Found ${invalidProxyNames.length} invalid proxies.\n\n'),
+            TextSpan(text: 'Do you want to remove them from the current profile?'),
+          ],
+        ),
+      );
+
+      if (confirm != true) {
+        return;
+      }
+
+      // Read the current profile file
+      final profilePath = await appPath.getProfilePath(currentProfile.id);
+      final file = File(profilePath);
+
+      if (!await file.exists()) {
+        throw Exception('Profile file not found');
+      }
+
+      final content = await file.readAsString();
+      final lines = content.split('\n');
+
+      // Parse YAML to find and remove invalid proxies
+      final newLines = <String>[];
+      bool inProxiesSection = false;
+      bool inProxyBlock = false;
+      List<String> currentProxyBlock = [];
+      String? currentProxyName;
+
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i];
+
+        // Check if we're in the proxies section
+        if (line.trim() == 'proxies:') {
+          inProxiesSection = true;
+          newLines.add(line);
+          continue;
+        }
+
+        // Check if we've left the proxies section
+        if (inProxiesSection && line.isNotEmpty && !line.startsWith(' ')) {
+          // Save the last proxy block before leaving section
+          if (inProxyBlock && currentProxyName != null) {
+            if (!invalidProxyNames.contains(currentProxyName)) {
+              newLines.addAll(currentProxyBlock);
+            }
+          }
+          inProxiesSection = false;
+          inProxyBlock = false;
+          newLines.add(line);
+          continue;
+        }
+
+        if (inProxiesSection) {
+          // Detect start of new proxy block
+          if (line.trim().startsWith('- name:')) {
+            // Save previous proxy block if valid
+            if (inProxyBlock && currentProxyName != null) {
+              if (!invalidProxyNames.contains(currentProxyName)) {
+                newLines.addAll(currentProxyBlock);
+              }
+            }
+
+            // Start new proxy block
+            currentProxyBlock = [line];
+            inProxyBlock = true;
+
+            // Extract proxy name - simple approach
+            final namePart = line.split('name:').last.trim();
+            currentProxyName = namePart.replaceAll('"', '').replaceAll("'", '');
+          } else if (inProxyBlock) {
+            // Add line to current proxy block
+            currentProxyBlock.add(line);
+          }
+        } else {
+          // Add non-proxies section lines
+          newLines.add(line);
+        }
+      }
+
+      // Don't forget the last proxy block
+      if (inProxyBlock && currentProxyName != null) {
+        if (!invalidProxyNames.contains(currentProxyName)) {
+          newLines.addAll(currentProxyBlock);
+        }
+      }
+
+      // Write the modified content back
+      await file.writeAsString(newLines.join('\n'));
+
+      // Update proxy-groups to remove references to deleted proxies
+      await _updateProxyGroupsAfterRemoval(file, invalidProxyNames);
+
+      // Reload the profile
+      await _ref.read(currentProfileProvider)?.checkAndUpdate();
+      await applyProfile();
+
+      globalState.showNotifier(
+        'Removed ${invalidProxyNames.length} invalid proxies',
+      );
+    }, needLoading: true, title: 'Remove Invalid Proxies');
+  }
+
+  /// Update proxy groups to remove references to deleted proxies
+  Future<void> _updateProxyGroupsAfterRemoval(
+      File file,
+      Set<String> removedProxyNames,
+      ) async {
+    final content = await file.readAsString();
+    final lines = content.split('\n');
+    final newLines = <String>[];
+
+    bool inProxyGroupsSection = false;
+    bool inProxiesList = false;
+
+    for (final line in lines) {
+      // Check if we're in proxy-groups section
+      if (line.trim() == 'proxy-groups:') {
+        inProxyGroupsSection = true;
+        newLines.add(line);
+        continue;
+      }
+
+      // Check if we've left proxy-groups section
+      if (inProxyGroupsSection && line.isNotEmpty && !line.startsWith(' ')) {
+        inProxyGroupsSection = false;
+        inProxiesList = false;
+        newLines.add(line);
+        continue;
+      }
+
+      if (inProxyGroupsSection) {
+        // Check if we're in the proxies list
+        if (line.trim() == 'proxies:') {
+          inProxiesList = true;
+          newLines.add(line);
+          continue;
+        }
+
+        // Check if we've left the proxies list
+        if (inProxiesList && line.trim().isNotEmpty &&
+            !line.trim().startsWith('-') &&
+            line.trim().contains(':')) {
+          inProxiesList = false;
+        }
+
+        // Filter out removed proxy names from the proxies list
+        if (inProxiesList && line.trim().startsWith('- ')) {
+          // Extract proxy name - simple approach
+          final proxyPart = line.split('-').last.trim();
+          final proxyName = proxyPart.replaceAll('"', '').replaceAll("'", '');
+
+          if (removedProxyNames.contains(proxyName)) {
+            // Skip this line (don't add to newLines)
+            continue;
+          }
+        }
+      }
+
+      newLines.add(line);
+    }
+
+    await file.writeAsString(newLines.join('\n'));
+  }
+
+  /// Test all proxies and then remove invalid ones
+  Future<void> testAndRemoveInvalidProxies() async {
+    await safeRun(() async {
+      // Get all groups
+      final groups = _ref.read(groupsProvider);
+      if (groups.isEmpty) {
+        throw Exception('No proxy groups found');
+      }
+
+      // Show progress
+      globalState.showNotifier('Testing all proxies...');
+
+      // Test all proxies in all groups
+      final testFutures = <Future<void>>[];
+      for (final group in groups) {
+        testFutures.add(delayTest(group.all, group.testUrl));
+      }
+      await Future.wait(testFutures);
+
+      // Wait a bit for all tests to complete
+      await Future.delayed(Duration(seconds: 2));
+
+      // Now remove invalid proxies
+      await removeInvalidProxies();
+    }, needLoading: true, title: 'Test and Remove Invalid Proxies');
   }
 }

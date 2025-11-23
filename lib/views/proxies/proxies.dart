@@ -9,6 +9,7 @@ import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../state.dart';
 import 'setting.dart';
 import 'tab.dart';
 
@@ -26,6 +27,7 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
 
   List<Widget> _buildActions() {
     return [
+      CleanInvalidProxiesButton(),
       if (_isTab)
         IconButton(
           onPressed: () {
@@ -156,6 +158,24 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     );
   }
 }
+
+class CleanInvalidProxiesButton extends ConsumerWidget {
+  const CleanInvalidProxiesButton({super.key});
+
+  Future<void> _handleCleanup(BuildContext context) async {
+    await globalState.appController.testAndRemoveInvalidProxies();
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return IconButton(
+      onPressed: () => _handleCleanup(context),
+      icon: const Icon(Icons.cleaning_services),
+      tooltip: 'Test & Remove Invalid Proxies',
+    );
+  }
+}
+
 
 class _IconConfigView extends ConsumerWidget {
   const _IconConfigView();

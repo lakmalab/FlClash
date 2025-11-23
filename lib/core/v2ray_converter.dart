@@ -21,9 +21,7 @@ class V2RayConverter {
             proxies.add(parsedProxy);
           }
         } catch (e) {
-          // Log and skip invalid proxy
-          print('Skipping invalid proxy line: $trimmedLine');
-          print('Error: $e');
+
           continue;
         }
       }
