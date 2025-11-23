@@ -1932,8 +1932,153 @@ class AppController {
       commonPrint.log('Valid proxies: $testedCount/${allProxies.length}');
       commonPrint.log('Invalid proxies found: $invalidCount');
 
-      // Now remove invalid proxies using the same delay data source as UI
       await removeInvalidProxies();
     }, needLoading: true, title: 'Test and Remove Invalid Proxies');
+  }
+
+  Future<void> overrideSniForAllProxies(String newSni) async {
+    await safeRun(() async {
+      final currentProfile = _ref.read(currentProfileProvider);
+      if (currentProfile == null) {
+        throw Exception('No active profile');
+      }
+
+      final profilePath = await appPath.getProfilePath(currentProfile.id);
+      final file = File(profilePath);
+
+      if (!await file.exists()) {
+        throw Exception('Profile file not found');
+      }
+
+      final content = await file.readAsString();
+      final lines = content.split('\n');
+      final newLines = <String>[];
+
+      bool inProxiesSection = false;
+      bool inProxyBlock = false;
+      List<String> currentProxyBlock = [];
+      int proxiesUpdated = 0;
+
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i];
+        final trimmedLine = line.trim();
+
+        // Check if we're in the proxies section
+        if (trimmedLine == 'proxies:') {
+          inProxiesSection = true;
+          inProxyBlock = false;
+          newLines.add(line);
+          continue;
+        }
+
+        // Check if we've left the proxies section
+        if (inProxiesSection && trimmedLine.isNotEmpty && !line.startsWith(' ')) {
+          // Save the last proxy block before leaving section
+          if (inProxyBlock) {
+            _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+            newLines.addAll(currentProxyBlock);
+            currentProxyBlock.clear();
+            proxiesUpdated++;
+          }
+          inProxiesSection = false;
+          inProxyBlock = false;
+          newLines.add(line);
+          continue;
+        }
+
+        if (inProxiesSection) {
+          // Detect start of new proxy block
+          if (trimmedLine.startsWith('- name:')) {
+            // Save previous proxy block if valid
+            if (inProxyBlock) {
+              _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+              newLines.addAll(currentProxyBlock);
+              currentProxyBlock.clear();
+              proxiesUpdated++;
+            }
+
+            // Start new proxy block
+            currentProxyBlock = [line];
+            inProxyBlock = true;
+          } else if (inProxyBlock) {
+            // Add line to current proxy block
+            currentProxyBlock.add(line);
+
+            // Check if this is the end of the proxy block (empty line or next proxy)
+            if (i + 1 < lines.length) {
+              final nextLine = lines[i + 1].trim();
+              if (nextLine.isEmpty || nextLine.startsWith('- name:')) {
+                // End of current proxy block
+                _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+                newLines.addAll(currentProxyBlock);
+                currentProxyBlock.clear();
+                inProxyBlock = false;
+                proxiesUpdated++;
+              }
+            }
+          } else {
+            // Add non-proxy lines in proxies section
+            newLines.add(line);
+          }
+        } else {
+          // Add non-proxies section lines
+          newLines.add(line);
+        }
+      }
+
+      // Don't forget the last proxy block
+      if (inProxyBlock) {
+        _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+        newLines.addAll(currentProxyBlock);
+        proxiesUpdated++;
+      }
+
+      // Write the modified content back
+      final newContent = newLines.join('\n');
+      await file.writeAsString(newContent);
+
+      // Reload the profile
+      await _ref.read(currentProfileProvider)?.checkAndUpdate();
+      await applyProfile(silence: true);
+
+    }, needLoading: true, title: 'Override SNI');
+  }
+
+  void _addOrUpdateSniInProxyBlock(List<String> proxyBlock, String newSni) {
+    // Check if SNI already exists in the block
+    bool sniFound = false;
+    for (int i = 0; i < proxyBlock.length; i++) {
+      if (proxyBlock[i].trim().startsWith('sni:')) {
+        // Update existing SNI
+        proxyBlock[i] = '    sni: ${_escapeYamlValue(newSni)}';
+        sniFound = true;
+        break;
+      }
+    }
+
+    // Add SNI if not found
+    if (!sniFound) {
+      // Find the position to insert SNI (after basic fields)
+      int insertIndex = _findSniInsertPosition(proxyBlock);
+      proxyBlock.insert(insertIndex, '    sni: ${_escapeYamlValue(newSni)}');
+    }
+  }
+
+  int _findSniInsertPosition(List<String> proxyBlock) {
+    // Insert SNI after basic fields like name, type, server, port
+    final basicFields = ['name:', 'type:', 'server:', 'port:'];
+    int lastBasicFieldIndex = -1;
+
+    for (int i = 0; i < proxyBlock.length; i++) {
+      final line = proxyBlock[i].trim();
+      for (final field in basicFields) {
+        if (line.startsWith(field)) {
+          lastBasicFieldIndex = i;
+          break;
+        }
+      }
+    }
+
+    return lastBasicFieldIndex + 1;
   }
 }

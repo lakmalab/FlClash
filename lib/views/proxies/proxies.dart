@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state.dart';
+import 'SniOverrideDialog.dart';
 import 'setting.dart';
 import 'tab.dart';
 
@@ -28,6 +29,15 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
   List<Widget> _buildActions() {
     return [
       CleanInvalidProxiesButton(),
+      IconButton(
+        icon: const Icon(Icons.dns),
+        onPressed: () {
+          showDialog(
+            context: context,
+            builder: (context) => SniOverrideDialog(currentSni: ''),
+          );
+        },
+      ),
       if (_isTab)
         IconButton(
           onPressed: () {
@@ -168,7 +178,9 @@ class CleanInvalidProxiesButton extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return IconButton(
+    return
+
+      IconButton(
       onPressed: () => _handleCleanup(context),
       icon: const Icon(Icons.cleaning_services),
       tooltip: 'Test & Remove Invalid Proxies',
