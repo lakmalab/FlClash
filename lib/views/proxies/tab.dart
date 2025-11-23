@@ -247,6 +247,7 @@ class ProxiesTabViewState extends ConsumerState<ProxiesTabView>
   }
 }
 
+
 class ProxyGroupView extends ConsumerStatefulWidget {
   final Group group;
   final int columns;
@@ -262,6 +263,7 @@ class ProxyGroupView extends ConsumerStatefulWidget {
   @override
   ConsumerState<ProxyGroupView> createState() => _ProxyGroupViewState();
 }
+
 
 class _ProxyGroupViewState extends ConsumerState<ProxyGroupView> {
   late final ScrollController _controller;
@@ -347,6 +349,7 @@ class _ProxyGroupViewState extends ConsumerState<ProxyGroupView> {
     );
   }
 }
+
 
 class DelayTestButton extends StatefulWidget {
   final Future Function() onClick;

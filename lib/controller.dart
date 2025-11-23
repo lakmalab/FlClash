@@ -10,6 +10,7 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
+import 'package:fl_clash/views/proxies/common.dart';
 import 'package:fl_clash/widgets/dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -17,7 +18,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart';
 import 'package:url_launcher/url_launcher.dart';
-
+import 'package:yaml/yaml.dart';
 import 'common/common.dart';
 import 'models/models.dart';
 
@@ -1416,5 +1417,523 @@ class AppController {
     } finally {
       _ref.read(loadingProvider.notifier).value = false;
     }
+  }
+
+
+  // Replace these two methods in your AppController class
+
+  // Replace these two methods in your AppController class
+
+  // Replace these two methods in your AppController class
+
+  Future<void> removeInvalidProxies() async {
+    await safeRun(() async {
+      final currentProfile = _ref.read(currentProfileProvider);
+      if (currentProfile == null) {
+        throw Exception('No active profile');
+      }
+
+      // Get current groups to access all proxies
+      final groups = _ref.read(groupsProvider);
+      if (groups.isEmpty) {
+        throw Exception('No proxy groups found');
+      }
+
+      // Collect all proxy names with invalid delays - use DECODED names for consistency
+      final Set<String> invalidProxyNames = {};
+
+      commonPrint.log('=== Checking delays for invalid proxies ===');
+
+      // Check ALL proxies from ALL groups using the SAME logic as the UI
+      for (final group in groups) {
+        for (final proxy in group.all) {
+          final proxyName = proxy.name;
+
+          // Use the SAME provider that the ProxyCard uses to get delay
+          final delay = _ref.read(getDelayProvider(proxyName: proxyName, testUrl: group.testUrl));
+
+          // Use the SAME logic as the UI to determine invalid proxies:
+          if (delay == null || delay == 0 || delay == -1 || delay > 5000) {
+            // Decode the proxy name to match the format used in proxy groups
+            final decodedProxyName = _decodeProxyName(proxyName);
+            commonPrint.log('Marking as INVALID: $decodedProxyName (delay: $delay)');
+
+            invalidProxyNames.add(decodedProxyName);
+          }
+        }
+      }
+
+      commonPrint.log('Total invalid proxies found: ${invalidProxyNames.length}');
+      commonPrint.log('Invalid proxy names set: $invalidProxyNames');
+
+      if (invalidProxyNames.isEmpty) {
+        globalState.showNotifier('No invalid proxies found');
+        return;
+      }
+
+      // Show confirmation dialog
+      final confirm = await globalState.showMessage(
+        title: 'Remove Invalid Proxies',
+        message: TextSpan(
+          children: [
+            TextSpan(text: 'Found ${invalidProxyNames.length} invalid proxies.\n\n'),
+            TextSpan(text: 'Do you want to remove them from the current profile?'),
+          ],
+        ),
+      );
+
+      if (confirm != true) {
+        return;
+      }
+
+      // Read the current profile file
+      final profilePath = await appPath.getProfilePath(currentProfile.id);
+      final file = File(profilePath);
+
+      if (!await file.exists()) {
+        throw Exception('Profile file not found');
+      }
+
+      // First remove from proxies section - use decoded names
+      await _removeProxiesFromProxiesSection(file, invalidProxyNames);
+
+      // Then remove from proxy groups - use decoded names
+      await _updateProxyGroupsAfterRemoval(file, invalidProxyNames);
+
+      // Reload the profile
+      await _ref.read(currentProfileProvider)?.checkAndUpdate();
+      await applyProfile();
+
+      globalState.showNotifier(
+        'Removed ${invalidProxyNames.length} invalid proxies',
+      );
+    }, needLoading: true, title: 'Remove Invalid Proxies');
+  }
+  /// Remove proxies from the proxies section using decoded names
+  Future<void> _removeProxiesFromProxiesSection(
+      File file,
+      Set<String> invalidProxyNames,
+      ) async {
+    final content = await file.readAsString();
+    final lines = content.split('\n');
+
+    // Parse and remove invalid proxies
+    final newLines = <String>[];
+    bool inProxiesSection = false;
+    bool inProxyBlock = false;
+    List<String> currentProxyBlock = [];
+    String? currentProxyName;
+
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final trimmedLine = line.trim();
+
+      // Check if we're in the proxies section
+      if (trimmedLine == 'proxies:') {
+        inProxiesSection = true;
+        newLines.add(line);
+        continue;
+      }
+
+      // Check if we've left the proxies section
+      if (inProxiesSection && trimmedLine.isNotEmpty && !line.startsWith(' ')) {
+        // Save the last proxy block before leaving section
+        if (inProxyBlock && currentProxyName != null) {
+          if (!invalidProxyNames.contains(currentProxyName)) {
+            newLines.addAll(currentProxyBlock);
+          }
+          currentProxyBlock.clear();
+        }
+        inProxiesSection = false;
+        inProxyBlock = false;
+        newLines.add(line);
+        continue;
+      }
+
+      if (inProxiesSection) {
+        // Detect start of new proxy block
+        if (trimmedLine.startsWith('- name:')) {
+          // Save previous proxy block if valid
+          if (inProxyBlock && currentProxyName != null) {
+            if (!invalidProxyNames.contains(currentProxyName)) {
+              newLines.addAll(currentProxyBlock);
+            }
+            currentProxyBlock.clear();
+          }
+
+          // Start new proxy block
+          currentProxyBlock = [line];
+          inProxyBlock = true;
+
+          // Extract proxy name and decode it
+          final namePart = line.split('name:').last.trim();
+          currentProxyName = _decodeProxyName(_extractRawProxyName(namePart));
+        } else if (inProxyBlock) {
+          // Add line to current proxy block
+          currentProxyBlock.add(line);
+
+          // Check if this is the end of the proxy block (empty line or next proxy)
+          if (i + 1 < lines.length) {
+            final nextLine = lines[i + 1].trim();
+            if (nextLine.isEmpty || nextLine.startsWith('- name:')) {
+              // End of current proxy block
+              if (currentProxyName != null && !invalidProxyNames.contains(currentProxyName)) {
+                newLines.addAll(currentProxyBlock);
+              }
+              currentProxyBlock.clear();
+              inProxyBlock = false;
+              currentProxyName = null;
+            }
+          }
+        } else {
+          // Add non-proxy lines in proxies section
+          newLines.add(line);
+        }
+      } else {
+        // Add non-proxies section lines
+        newLines.add(line);
+      }
+    }
+
+    // Don't forget the last proxy block
+    if (inProxyBlock && currentProxyName != null) {
+      if (!invalidProxyNames.contains(currentProxyName)) {
+        newLines.addAll(currentProxyBlock);
+      }
+    }
+
+    // Write the modified content back
+    final newContent = newLines.join('\n');
+    await file.writeAsString(newContent);
+  }
+
+  /// Extract raw proxy name (without quotes)
+  String _extractRawProxyName(String nameLine) {
+    return nameLine.replaceAll('"', '').replaceAll("'", '').trim();
+  }
+  /// Decode proxy name for consistent matching
+  String _decodeProxyName(String proxyName) {
+    try {
+      return Uri.decodeComponent(proxyName);
+    } catch (e) {
+      // If decoding fails, manually replace common URL encoded characters
+      return proxyName
+          .replaceAll('%20', ' ')
+          .replaceAll('%3E', '>')
+          .replaceAll('%3C', '<')
+          .replaceAll('%26', '&')
+          .replaceAll('%3D', '=')
+          .replaceAll('%2B', '+')
+          .replaceAll('%23', '#')
+          .replaceAll('%25', '%')
+          .replaceAll('%2F', '/')
+          .replaceAll('%3F', '?')
+          .replaceAll('%3A', ':')
+          .replaceAll('%40', '@');
+    }
+  }
+
+  String _extractProxyName(String nameLine) {
+    // Remove quotes and trim
+    var name = nameLine.replaceAll('"', '').replaceAll("'", '').trim();
+
+    // Decode URL-encoded characters to ensure consistent matching
+    try {
+      name = Uri.decodeComponent(name);
+    } catch (e) {
+      // If decoding fails, at least replace common URL encoded characters
+      name = name
+          .replaceAll('%20', ' ')
+          .replaceAll('%3E', '>')
+          .replaceAll('%3C', '<')
+          .replaceAll('%26', '&')
+          .replaceAll('%3D', '=')
+          .replaceAll('%2B', '+')
+          .replaceAll('%23', '#')
+          .replaceAll('%25', '%')
+          .replaceAll('%2F', '/')
+          .replaceAll('%3F', '?')
+          .replaceAll('%3A', ':');
+    }
+
+    return name;
+  }
+
+  /// Update proxy groups to remove references to deleted proxies
+  /// Update proxy groups to remove references to deleted proxies using YAML parsing
+  /// Update proxy groups to remove references to deleted proxies
+  /// Debug version to see exactly what's happening
+  /// Update proxy groups to remove references to deleted proxies
+  /// Update proxy groups to remove references to deleted proxies
+  Future<void> _updateProxyGroupsAfterRemoval(
+      File file,
+      Set<String> removedProxyNames,
+      ) async {
+    final content = await file.readAsString();
+    final lines = content.split('\n');
+    final newLines = <String>[];
+
+    commonPrint.log('=== Starting proxy groups cleanup ===');
+    commonPrint.log('Removed proxy names count: ${removedProxyNames.length}');
+    commonPrint.log('Sample removed names: ${removedProxyNames.take(3).toList()}');
+
+    bool inProxyGroupsSection = false;
+    bool inProxiesList = false;
+    int proxiesRemovedCount = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final trimmedLine = line.trim();
+
+      // Check if we're in proxy-groups section
+      if (trimmedLine == 'proxy-groups:') {
+        inProxyGroupsSection = true;
+        commonPrint.log('Entered proxy-groups section');
+        newLines.add(line);
+        continue;
+      }
+
+      // Check if we've left proxy-groups section
+      if (inProxyGroupsSection && trimmedLine.isNotEmpty && !line.startsWith(' ')) {
+        inProxyGroupsSection = false;
+        inProxiesList = false;
+        commonPrint.log('Left proxy-groups section');
+        newLines.add(line);
+        continue;
+      }
+
+      if (inProxyGroupsSection) {
+        // Check if we're in a proxies list
+        if (trimmedLine == 'proxies:') {
+          inProxiesList = true;
+          commonPrint.log('Found proxies list');
+          newLines.add(line);
+          continue;
+        }
+
+        // Check if we've left the proxies list
+        if (inProxiesList && trimmedLine.isNotEmpty && !trimmedLine.startsWith('- ')) {
+          inProxiesList = false;
+          commonPrint.log('Left proxies list');
+        }
+
+        // Process proxy entries in proxies list
+        if (inProxiesList && trimmedLine.startsWith('- ')) {
+          // Extract and decode the proxy name from the line
+          final proxyName = _extractProxyNameFromLine(line);
+          commonPrint.log('Checking proxy in group: $proxyName');
+
+          if (removedProxyNames.contains(proxyName)) {
+            commonPrint.log('REMOVING proxy from group: $proxyName');
+            proxiesRemovedCount++;
+            continue; // Skip this line
+          } else {
+            commonPrint.log('KEEPING proxy in group: $proxyName');
+            newLines.add(line);
+          }
+        } else {
+          newLines.add(line);
+        }
+      } else {
+        newLines.add(line);
+      }
+    }
+
+    commonPrint.log('=== Proxy groups cleanup complete ===');
+    commonPrint.log('Total proxies removed from groups: $proxiesRemovedCount');
+
+    final newContent = newLines.join('\n');
+    await file.writeAsString(newContent);
+  }
+
+  /// Extract raw proxy name from a line (without URL decoding)
+  String _extractRawProxyNameFromLine(String line) {
+    // Remove the leading dash and spaces, then extract the name
+    final withoutDash = line.replaceFirst(RegExp(r'^\s*-\s*'), '').trim();
+
+    // Remove quotes if present but don't decode URL
+    var name = withoutDash.replaceAll('"', '').replaceAll("'", '').trim();
+
+    return name;
+  }
+
+  /// Extract proxy name from a line in proxy groups (with URL decoding)
+  String _extractProxyNameFromLine(String line) {
+    final rawName = _extractRawProxyNameFromLine(line);
+
+    // Decode URL-encoded characters
+    try {
+      return Uri.decodeComponent(rawName);
+    } catch (e) {
+      // If decoding fails, manually replace common URL encoded characters
+      return rawName
+          .replaceAll('%20', ' ')
+          .replaceAll('%3E', '>')
+          .replaceAll('%3C', '<')
+          .replaceAll('%26', '&')
+          .replaceAll('%3D', '=')
+          .replaceAll('%2B', '+')
+          .replaceAll('%23', '#')
+          .replaceAll('%25', '%')
+          .replaceAll('%2F', '/')
+          .replaceAll('%3F', '?')
+          .replaceAll('%3A', ':')
+          .replaceAll('%40', '@');
+    }
+  }
+  /// Extract proxy name from a line in proxy groups
+
+  /// Fallback manual method for proxy groups update
+  Future<void> _updateProxyGroupsManually(
+      File file,
+      Set<String> removedProxyNames,
+      ) async {
+    final content = await file.readAsString();
+    final lines = content.split('\n');
+    final newLines = <String>[];
+
+    bool inProxyGroupsSection = false;
+    bool inProxiesList = false;
+    int currentIndentLevel = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final trimmedLine = line.trim();
+
+      // Check if we're in proxy-groups section
+      if (trimmedLine == 'proxy-groups:') {
+        inProxyGroupsSection = true;
+        newLines.add(line);
+        continue;
+      }
+
+      // Check if we've left proxy-groups section
+      if (inProxyGroupsSection && trimmedLine.isNotEmpty && !line.startsWith(' ')) {
+        inProxyGroupsSection = false;
+        inProxiesList = false;
+        newLines.add(line);
+        continue;
+      }
+
+      if (inProxyGroupsSection) {
+        // Calculate current indent level
+        final indentMatch = RegExp(r'^(\s*)').firstMatch(line);
+        final currentIndent = indentMatch?.group(1)?.length ?? 0;
+
+        // Check if we're in the proxies list (indent level 2)
+        if (trimmedLine == 'proxies:' && currentIndent == 2) {
+          inProxiesList = true;
+          newLines.add(line);
+          continue;
+        }
+
+        // Check if we've left the proxies list (different indent or new field)
+        if (inProxiesList && currentIndent != 4) {
+          inProxiesList = false;
+        }
+
+        // Filter out removed proxy names from the proxies list
+        if (inProxiesList && currentIndent == 4 && trimmedLine.startsWith('- ')) {
+          // Extract proxy name
+          final proxyPart = line.split('-').last.trim();
+          final proxyName = _extractProxyName(proxyPart);
+
+          if (removedProxyNames.contains(proxyName)) {
+            // Skip this line (don't add to newLines)
+            commonPrint.log('Removing proxy $proxyName from proxy group');
+            continue;
+          } else {
+            newLines.add(line);
+          }
+        } else {
+          // Add all other lines
+          newLines.add(line);
+        }
+      } else {
+        // Add non-proxy-groups section lines
+        newLines.add(line);
+      }
+    }
+
+    await file.writeAsString(newLines.join('\n'));
+  }
+
+
+  /// Test all proxies and then remove invalid ones
+  /// Test all proxies and then remove invalid ones
+  Future<void> testAndRemoveInvalidProxies() async {
+    await safeRun(() async {
+      final currentProfile = _ref.read(currentProfileProvider);
+      if (currentProfile == null) {
+        throw Exception('No active profile');
+      }
+
+      // Get all groups
+      final groups = _ref.read(groupsProvider);
+      if (groups.isEmpty) {
+        throw Exception('No proxy groups found');
+      }
+
+      // Show testing progress
+      globalState.showNotifier('Testing all proxies for delays...');
+
+      // Collect all proxies from all groups
+      final allProxies = <Proxy>[];
+      String? testUrl;
+
+      for (final group in groups) {
+        allProxies.addAll(group.all);
+        // Use the first available test URL
+        if (testUrl == null && group.testUrl != null) {
+          testUrl = group.testUrl;
+        }
+      }
+
+      if (allProxies.isEmpty) {
+        throw Exception('No proxies found to test');
+      }
+
+      // Use app setting test URL as fallback
+      final realTestUrl = testUrl ?? _ref.read(appSettingProvider).testUrl;
+
+      commonPrint.log('=== Starting delay test for ${allProxies.length} proxies ===');
+      commonPrint.log('Using test URL: $realTestUrl');
+
+      // Test ALL proxies - this should populate the delay data
+      await delayTest(allProxies, realTestUrl);
+
+      // Wait for delay data to be updated in the providers
+      await Future.delayed(Duration(seconds: 3));
+
+      // Force refresh the groups to ensure delay data is processed
+      await updateGroups();
+
+      // Wait a bit more for the UI providers to update
+      await Future.delayed(Duration(seconds: 2));
+
+      // Debug: Check what delays we have now using the same provider as UI
+      commonPrint.log('=== After testing - Checking delays via getDelayProvider ===');
+      int testedCount = 0;
+      int invalidCount = 0;
+
+      for (final group in groups) {
+        for (final proxy in group.all) {
+          final delay = _ref.read(getDelayProvider(proxyName: proxy.name, testUrl: group.testUrl));
+          commonPrint.log('${proxy.name}: $delay');
+          if (delay != null && delay > 0) {
+            testedCount++;
+          }
+          if (delay == null || delay == 0 || delay == -1 || delay > 5000) {
+            invalidCount++;
+          }
+        }
+      }
+
+      commonPrint.log('Valid proxies: $testedCount/${allProxies.length}');
+      commonPrint.log('Invalid proxies found: $invalidCount');
+
+      // Now remove invalid proxies using the same delay data source as UI
+      await removeInvalidProxies();
+    }, needLoading: true, title: 'Test and Remove Invalid Proxies');
   }
 }
