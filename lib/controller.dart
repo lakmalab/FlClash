@@ -34,6 +34,438 @@ class AppController {
       await setupClashConfig();
     });
   }
+  Future<void> addProfileFromV2RayConfig(String configData) async {
+    try {
+      // Navigate to profiles page first
+      if (globalState.navigatorKey.currentState?.canPop() ?? false) {
+        globalState.navigatorKey.currentState?.popUntil((route) => route.isFirst);
+      }
+      toProfiles();
+
+      _ref.read(loadingProvider.notifier).value = true;
+
+      try {
+        // Convert V2Ray config to mihomo proxies using CoreController
+        final proxies = await coreController.convertV2RayConfig(configData);
+
+        if (proxies.isEmpty) {
+          throw Exception('No valid proxies found in V2Ray config');
+        }
+
+        // Create profile from converted proxies
+        final profile = await _createProfileFromProxies(proxies);
+
+        await addProfile(profile);
+
+        // Show success message with count of successfully converted proxies
+        final successCount = proxies.length;
+        globalState.showNotifier('$successCount ${"profileAddedFromClipboard"}');
+      } catch (e) {
+        globalState.showNotifier('${"failedToParseV2RayConfig"}: $e');
+      } finally {
+        _ref.read(loadingProvider.notifier).value = false;
+      }
+
+    } catch (e) {
+      globalState.showNotifier('${"failedToParseV2RayConfig"}: $e');
+      _ref.read(loadingProvider.notifier).value = false;
+    }
+  }
+
+  Future<Profile> _createProfileFromProxies(List<Map<String, dynamic>> proxies) async {
+    // Filter and validate proxies
+    final validProxies = proxies.where((proxy) {
+      try {
+        // Basic validation
+        final name = proxy['name']?.toString();
+        final type = proxy['type']?.toString();
+        final server = proxy['server']?.toString();
+        final port = proxy['port'];
+
+        if (name == null || name.isEmpty ||
+            type == null || type.isEmpty ||
+            server == null || server.isEmpty ||
+            port == null) {
+          return false;
+        }
+
+        // Validate specific protocol structures
+        return _validateProxyStructure(proxy);
+      } catch (e) {
+        return false;
+      }
+    }).toList();
+
+    if (validProxies.isEmpty) {
+      throw Exception('No valid proxies found after filtering');
+    }
+
+    // Create profile
+    final firstName = validProxies.first['name']?.toString() ?? 'V2Ray';
+    final profileName = '${firstName}_${DateTime.now().millisecondsSinceEpoch}';
+
+    final clashConfig = {
+      'proxies': validProxies,
+      'proxy-groups': [
+        {
+          'name': 'Auto',
+          'type': 'url-test',
+          'proxies': validProxies.map((p) => p['name'] as String).toList(),
+          'url': _ref.read(appSettingProvider).testUrl,
+          'interval': 300,
+        }
+      ],
+      'rules': [
+        'GEOIP,CN,DIRECT',
+        'MATCH,Auto',
+      ],
+    };
+
+    final yamlConfig = _convertToYaml(clashConfig);
+
+    // Debug log
+    commonPrint.log('Generated YAML for $profileName:\n$yamlConfig');
+
+    // Validate before saving
+    try {
+      await coreController.validateConfig(yamlConfig);
+    } catch (e) {
+      commonPrint.log('Invalid YAML config: $e');
+      throw Exception('Generated invalid YAML config: $e');
+    }
+
+    return await Profile.normal(label: profileName).saveFile(utf8.encode(yamlConfig));
+  }
+
+  bool _validateProxyStructure(Map<String, dynamic> proxy) {
+    try {
+      // Validate ws-opts structure
+      if (proxy['ws-opts'] != null) {
+        final wsOpts = proxy['ws-opts'];
+        if (wsOpts is! Map<String, dynamic>) {
+          return false;
+        }
+
+        // Ensure headers is a map
+        if (wsOpts['headers'] != null && wsOpts['headers'] is! Map<String, dynamic>) {
+          return false;
+        }
+      }
+
+      // Validate http-opts structure
+      if (proxy['http-opts'] != null) {
+        final httpOpts = proxy['http-opts'];
+        if (httpOpts is! Map<String, dynamic>) {
+          return false;
+        }
+
+        // Ensure headers is a map
+        if (httpOpts['headers'] != null && httpOpts['headers'] is! Map<String, dynamic>) {
+          return false;
+        }
+      }
+
+      // Validate h2-opts structure
+      if (proxy['h2-opts'] != null) {
+        final h2Opts = proxy['h2-opts'];
+        if (h2Opts is! Map<String, dynamic>) {
+          return false;
+        }
+      }
+
+      // Validate grpc-opts structure
+      if (proxy['grpc-opts'] != null) {
+        final grpcOpts = proxy['grpc-opts'];
+        if (grpcOpts is! Map<String, dynamic>) {
+          return false;
+        }
+      }
+
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  String _convertToYaml(Map<String, dynamic> config) {
+    final buffer = StringBuffer();
+    bool hasContent = false;
+
+    // Write proxies section
+    if (config.containsKey('proxies') && (config['proxies'] as List).isNotEmpty) {
+      final validProxies = (config['proxies'] as List).whereType<Map<String, dynamic>>().where((proxy) {
+        return proxy['name'] != null && proxy['type'] != null && proxy['server'] != null;
+      }).toList();
+
+      if (validProxies.isNotEmpty) {
+        buffer.writeln('proxies:');
+        for (final proxy in validProxies) {
+          _writeProxyToYaml(proxy, buffer);
+        }
+        hasContent = true;
+      }
+    }
+
+    // Write proxy groups section
+    if (config.containsKey('proxy-groups') && (config['proxy-groups'] as List).isNotEmpty) {
+      final validGroups = (config['proxy-groups'] as List).whereType<Map<String, dynamic>>().where((group) {
+        return group['name'] != null && group['type'] != null;
+      }).toList();
+
+      if (validGroups.isNotEmpty) {
+        if (hasContent) buffer.writeln();
+        buffer.writeln('proxy-groups:');
+        for (final group in validGroups) {
+          _writeProxyGroupToYaml(group, buffer);
+        }
+        hasContent = true;
+      }
+    }
+
+    // Write rules section - FIXED FORMAT
+    if (config.containsKey('rules') && (config['rules'] as List).isNotEmpty) {
+      final validRules = (config['rules'] as List).whereType<String>().where((rule) => rule.isNotEmpty).toList();
+
+      if (validRules.isNotEmpty) {
+        if (hasContent) buffer.writeln();
+        buffer.writeln('rules:');
+        for (final rule in validRules) {
+          // Don't sanitize rules - they should be comma-separated
+          buffer.writeln('  - $rule');
+        }
+        hasContent = true;
+      }
+    }
+
+    if (!hasContent) {
+      buffer.writeln('proxies: []');
+      buffer.writeln('proxy-groups: []');
+      buffer.writeln('rules: []');
+    }
+
+    return buffer.toString();
+  }
+
+  void _writeProxyToYaml(Map<String, dynamic> proxy, StringBuffer buffer) {
+    try {
+      buffer.writeln('  - name: ${_escapeYamlValue(proxy['name']?.toString() ?? 'unknown')}');
+      buffer.writeln('    type: ${_escapeYamlValue(proxy['type']?.toString() ?? 'http')}');
+
+      // Write required fields first
+      if (proxy['server'] != null) {
+        buffer.writeln('    server: ${_escapeYamlValue(proxy['server']!.toString())}');
+      }
+
+      if (proxy['port'] != null) {
+        buffer.writeln('    port: ${proxy['port']}');
+      }
+
+      // Write optional fields (excluding already written ones and special opts)
+      final writtenKeys = {'name', 'type', 'server', 'port', 'ws-opts', 'http-opts', 'h2-opts', 'grpc-opts', 'plugin-opts'};
+      final sortedKeys = proxy.keys.where((key) => !writtenKeys.contains(key)).toList()..sort();
+
+      for (final key in sortedKeys) {
+        final value = proxy[key];
+        if (value == null) continue;
+
+        final sanitizedKey = _sanitizeYamlString(key);
+        if (value is String) {
+          buffer.writeln('    $sanitizedKey: ${_escapeYamlValue(value)}');
+        } else if (value is bool) {
+          buffer.writeln('    $sanitizedKey: $value');
+        } else if (value is int || value is double) {
+          buffer.writeln('    $sanitizedKey: $value');
+        } else if (value is List) {
+          buffer.writeln('    $sanitizedKey:');
+          for (final item in value) {
+            if (item is String) {
+              buffer.writeln('      - ${_escapeYamlValue(item)}');
+            } else {
+              buffer.writeln('      - $item');
+            }
+          }
+        } else if (value is Map) {
+          buffer.writeln('    $sanitizedKey:');
+          _writeMapToYaml(value as Map<String, dynamic>, buffer, 3);
+        } else {
+          buffer.writeln('    $sanitizedKey: ${_escapeYamlValue(value.toString())}');
+        }
+      }
+
+      // Write special opts fields last - FIXED TO HANDLE HEADERS PROPERLY
+      if (proxy.containsKey('ws-opts')) {
+        buffer.writeln('    ws-opts:');
+        _writeMapToYaml(proxy['ws-opts'] as Map<String, dynamic>, buffer, 3);
+      }
+
+      if (proxy.containsKey('http-opts')) {
+        buffer.writeln('    http-opts:');
+        _writeMapToYaml(proxy['http-opts'] as Map<String, dynamic>, buffer, 3);
+      }
+
+      if (proxy.containsKey('h2-opts')) {
+        buffer.writeln('    h2-opts:');
+        _writeMapToYaml(proxy['h2-opts'] as Map<String, dynamic>, buffer, 3);
+      }
+
+      if (proxy.containsKey('grpc-opts')) {
+        buffer.writeln('    grpc-opts:');
+        _writeMapToYaml(proxy['grpc-opts'] as Map<String, dynamic>, buffer, 3);
+      }
+
+      if (proxy.containsKey('plugin-opts')) {
+        buffer.writeln('    plugin-opts:');
+        _writeMapToYaml(proxy['plugin-opts'] as Map<String, dynamic>, buffer, 3);
+      }
+    } catch (e) {
+      commonPrint.log('Skipping invalid proxy in YAML generation: $e');
+    }
+  }
+
+  void _writeProxyGroupToYaml(Map<String, dynamic> group, StringBuffer buffer) {
+    try {
+      buffer.writeln('  - name: ${_escapeYamlValue(group['name']?.toString() ?? 'unknown')}');
+      buffer.writeln('    type: ${_escapeYamlValue(group['type']?.toString() ?? 'select')}');
+
+      // Write proxies list if it exists
+      if (group['proxies'] is List) {
+        final proxies = (group['proxies'] as List).whereType<String>().toList();
+        if (proxies.isNotEmpty) {
+          buffer.writeln('    proxies:');
+          for (final proxy in proxies) {
+            buffer.writeln('      - ${_escapeYamlValue(proxy)}');
+          }
+        }
+      }
+
+      // Write other fields (excluding already written ones)
+      final writtenKeys = {'name', 'type', 'proxies'};
+      final sortedKeys = group.keys.where((key) => !writtenKeys.contains(key)).toList()..sort();
+
+      for (final key in sortedKeys) {
+        final value = group[key];
+        if (value == null) continue;
+
+        final sanitizedKey = _sanitizeYamlString(key);
+        if (value is String) {
+          buffer.writeln('    $sanitizedKey: ${_escapeYamlValue(value)}');
+        } else if (value is bool) {
+          buffer.writeln('    $sanitizedKey: $value');
+        } else if (value is int || value is double) {
+          buffer.writeln('    $sanitizedKey: $value');
+        } else {
+          buffer.writeln('    $sanitizedKey: ${_escapeYamlValue(value.toString())}');
+        }
+      }
+    } catch (e) {
+      commonPrint.log('Skipping invalid proxy group in YAML generation: $e');
+    }
+  }
+
+// FIXED: Properly write nested maps (especially headers)
+  void _writeMapToYaml(Map<String, dynamic> map, StringBuffer buffer, int indentLevel) {
+    final indent = '  ' * indentLevel;
+    final sortedKeys = map.keys.toList()..sort();
+
+    for (final key in sortedKeys) {
+      final value = map[key];
+      if (value == null) continue;
+
+      final sanitizedKey = _sanitizeYamlString(key);
+
+      if (value is String) {
+        buffer.writeln('$indent$sanitizedKey: ${_escapeYamlValue(value)}');
+      } else if (value is bool) {
+        buffer.writeln('$indent$sanitizedKey: $value');
+      } else if (value is int || value is double) {
+        buffer.writeln('$indent$sanitizedKey: $value');
+      } else if (value is List) {
+        buffer.writeln('$indent$sanitizedKey:');
+        for (final item in value) {
+          if (item is String) {
+            buffer.writeln('$indent  - ${_escapeYamlValue(item)}');
+          } else {
+            buffer.writeln('$indent  - $item');
+          }
+        }
+      } else if (value is Map) {
+        // Recursively write nested maps
+        buffer.writeln('$indent$sanitizedKey:');
+        _writeMapToYaml(value as Map<String, dynamic>, buffer, indentLevel + 1);
+      } else {
+        buffer.writeln('$indent$sanitizedKey: ${_escapeYamlValue(value.toString())}');
+      }
+    }
+  }
+
+  String _escapeYamlValue(dynamic value) {
+    if (value == null) return '""';
+
+    final stringValue = value.toString();
+    if (stringValue.isEmpty) return '""';
+
+    // Check if the value needs quotes
+    if (_requiresQuotes(stringValue)) {
+      // Escape any existing quotes and wrap in quotes
+      final escaped = stringValue.replaceAll('"', '\\"');
+      return '"$escaped"';
+    }
+
+    return stringValue;
+  }
+
+  String _sanitizeYamlString(String input) {
+    if (input.isEmpty) return '""';
+
+    // Remove characters that could break YAML keys
+    return input.replaceAll(RegExp(r'[^\w\-]'), '_');
+  }
+
+  bool _requiresQuotes(String value) {
+    if (value.isEmpty) return true;
+
+    final trimmed = value.trim();
+
+    // Always quote if it contains special YAML characters or spaces
+    if (trimmed.contains(':') ||
+        trimmed.contains('{') ||
+        trimmed.contains('}') ||
+        trimmed.contains('[') ||
+        trimmed.contains(']') ||
+        trimmed.contains(',') ||
+        trimmed.contains('*') ||
+        trimmed.contains('&') ||
+        trimmed.contains('#') ||
+        trimmed.contains('?') ||
+        trimmed.contains('|') ||
+        trimmed.contains('-') ||
+        trimmed.contains('>') ||
+        trimmed.contains('!') ||
+        trimmed.contains('%') ||
+        trimmed.contains('@') ||
+        trimmed.contains('\\') ||
+        trimmed.startsWith(' ') ||
+        trimmed.endsWith(' ') ||
+        trimmed.contains(' ')) {
+      return true;
+    }
+
+    // Quote if it looks like a YAML keyword
+    if (RegExp(r'^\d').hasMatch(trimmed) ||
+        trimmed.toLowerCase() == 'true' ||
+        trimmed.toLowerCase() == 'false' ||
+        trimmed.toLowerCase() == 'null' ||
+        trimmed.toLowerCase() == 'yes' ||
+        trimmed.toLowerCase() == 'no' ||
+        trimmed.toLowerCase() == 'on' ||
+        trimmed.toLowerCase() == 'off' ||
+        trimmed.toLowerCase() == 'y' ||
+        trimmed.toLowerCase() == 'n') {
+      return true;
+    }
+
+    return false;
+  }
+
 
   Future<void> updateClashConfigDebounce() async {
     debouncer.call(FunctionTag.updateClashConfig, () async {

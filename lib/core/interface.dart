@@ -78,7 +78,7 @@ mixin CoreInterface {
 
 abstract class CoreHandlerInterface with CoreInterface {
   Completer get completer;
-
+  Future<String> convertV2RayConfig(String configData);
   FutureOr<bool> destroy();
 
   Future<T?> _invoke<T>({

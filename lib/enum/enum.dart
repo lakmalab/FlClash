@@ -118,7 +118,7 @@ enum AccessControlMode { acceptSelected, rejectSelected }
 
 enum AccessSortType { none, name, time }
 
-enum ProfileType { file, url }
+enum ProfileType { file, url,v2rayClipboard }
 
 enum ResultType {
   @JsonValue(0)
@@ -244,7 +244,7 @@ enum ActionMethod {
   crash,
   setupConfig,
   deleteFile,
-
+  convertV2RayConfig,
   ///Android,
   setState,
   startTun,

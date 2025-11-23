@@ -11,6 +11,7 @@ import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/state.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
+import 'v2ray_converter.dart';
 
 class CoreController {
   static CoreController? _instance;
@@ -21,6 +22,27 @@ class CoreController {
       _interface = coreLib!;
     } else {
       _interface = coreService!;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> convertV2RayConfig(String configData) async {
+    try {
+      // For desktop platforms, use the Go conversion
+      if (system.isDesktop) {
+        final result = await _interface.convertV2RayConfig(configData);
+
+        if (result.isEmpty) {
+          throw Exception('Failed to convert V2Ray config: empty response');
+        }
+
+        final decoded = json.decode(result) as List<dynamic>;
+        return decoded.cast<Map<String, dynamic>>();
+      } else {
+        // For Android, use the Dart converter directly
+        return V2RayConverter.convertV2RayConfig(configData);
+      }
+    } catch (e) {
+      throw Exception('Failed to convert V2Ray config: $e');
     }
   }
 

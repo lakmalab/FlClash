@@ -27,7 +27,11 @@ class CoreLib extends CoreHandlerInterface {
     );
     return syncRes ?? '';
   }
-
+  @override
+  Future<String> convertV2RayConfig(String configData) async {
+    final result = await service?.convertV2RayConfig(configData);
+    return result ?? '';
+  }
   factory CoreLib() {
     _instance ??= CoreLib._internal();
     return _instance!;

@@ -24,6 +24,13 @@ class Service {
   final ObserverList<ServiceListener> _listeners =
       ObserverList<ServiceListener>();
 
+  Future<String> convertV2RayConfig(String configData) async {
+    return await methodChannel.invokeMethod<String>(
+      'convertV2RayConfig',
+      configData,
+    ) ??
+        '';
+  }
   factory Service() {
     _instance ??= Service._internal();
     return _instance!;

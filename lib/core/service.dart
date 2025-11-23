@@ -187,6 +187,15 @@ class CoreService extends CoreHandlerInterface {
 
   @override
   Completer get completer => _socketCompleter;
+
+  @override
+  Future<String> convertV2RayConfig(String configData) async {
+    return await invoke<String>(
+      method: ActionMethod.convertV2RayConfig,
+      data: configData,
+    ) ?? '';
+  }
+
 }
 
 final coreService = system.isDesktop ? CoreService() : null;

@@ -3,6 +3,7 @@ import 'package:fl_clash/pages/scan.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class AddProfileView extends StatelessWidget {
   final BuildContext context;
@@ -18,6 +19,22 @@ class AddProfileView extends StatelessWidget {
 
   Future<void> _handleAddProfileFormURL(String url) async {
     globalState.appController.addProfileFormURL(url);
+  }
+
+  Future<void> _handleAddProfileFromClipboard() async {
+    try {
+      final clipboardData = await Clipboard.getData('text/plain');
+      final text = clipboardData?.text?.trim();
+
+      if (text == null || text.isEmpty) {
+        globalState.showNotifier("clipboardEmpty");
+        return;
+      }
+
+      await globalState.appController.addProfileFromV2RayConfig(text);
+    } catch (e) {
+      globalState.showNotifier('${"clipboardError"}: $e');
+    }
   }
 
   Future<void> _toScan() async {
@@ -80,7 +97,13 @@ class AddProfileView extends StatelessWidget {
           title: Text(appLocalizations.url),
           subtitle: Text(appLocalizations.urlDesc),
           onTap: _toAdd,
-        )
+        ),
+        ListItem(
+          leading: const Icon(Icons.paste_sharp),
+          title: Text("Clipboard Convert"),
+          subtitle: Text("Convert V2ray to mihomo"),
+          onTap: _handleAddProfileFromClipboard,
+        ),
       ],
     );
   }

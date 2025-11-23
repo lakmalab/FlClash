@@ -251,7 +251,19 @@ class ProfileItem extends StatelessWidget {
       ),
     ];
   }
-
+  List<Widget> _buildV2RayClipboardProfileInfo(BuildContext context) {
+    return [
+      const SizedBox(height: 8),
+      Text(
+        'V2Ray Clipboard',
+        style: context.textTheme.labelMedium?.toLight,
+      ),
+      Text(
+        profile.lastUpdateDate?.lastUpdateTimeDesc ?? '',
+        style: context.textTheme.labelMedium?.toLighter,
+      ),
+    ];
+  }
   // _handleCopyLink(BuildContext context) async {
   //   await Clipboard.setData(
   //     ClipboardData(
@@ -383,6 +395,7 @@ class ProfileItem extends StatelessWidget {
                   ...switch (profile.type) {
                     ProfileType.file => _buildFileProfileInfo(context),
                     ProfileType.url => _buildUrlProfileInfo(context),
+                    ProfileType.v2rayClipboard => _buildV2RayClipboardProfileInfo(context),
                   },
                 ],
               ),
