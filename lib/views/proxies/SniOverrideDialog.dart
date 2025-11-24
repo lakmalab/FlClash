@@ -97,6 +97,11 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
   bool _overrideAllProxies = true;
   bool _showHistory = false;
 
+  // New toggles for field selection
+  bool _applyToSni = true;
+  bool _applyToHost = true;
+  bool _applyToServername = true;
+
   @override
   void initState() {
     super.initState();
@@ -115,6 +120,12 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
 
   Future<void> _applySniOverride() async {
     final newSni = _sniController.text.trim();
+
+    // Check if at least one field is selected
+    if (!_applyToSni && !_applyToHost && !_applyToServername) {
+      globalState.showNotifier('Please select at least one field to update');
+      return;
+    }
 
     if (_overrideAllProxies) {
       await _overrideSniForAllProxies(newSni);
@@ -164,7 +175,7 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
 
         if (inProxiesSection && trimmedLine.isNotEmpty && !line.startsWith(' ')) {
           if (inProxyBlock) {
-            _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+            _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
             newLines.addAll(currentProxyBlock);
             currentProxyBlock.clear();
             proxiesUpdated++;
@@ -178,7 +189,7 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
         if (inProxiesSection) {
           if (trimmedLine.startsWith('- name:')) {
             if (inProxyBlock) {
-              _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+              _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
               newLines.addAll(currentProxyBlock);
               currentProxyBlock.clear();
               proxiesUpdated++;
@@ -192,7 +203,7 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
             if (i + 1 < lines.length) {
               final nextLine = lines[i + 1].trim();
               if (nextLine.isEmpty || nextLine.startsWith('- name:')) {
-                _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+                _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
                 newLines.addAll(currentProxyBlock);
                 currentProxyBlock.clear();
                 inProxyBlock = false;
@@ -208,7 +219,7 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
       }
 
       if (inProxyBlock) {
-        _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+        _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
         newLines.addAll(currentProxyBlock);
         proxiesUpdated++;
       }
@@ -219,36 +230,62 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
       await ref.read(currentProfileProvider)?.checkAndUpdate();
       await globalState.appController.applyProfile(silence: true);
 
-      globalState.showNotifier('SNI updated for $proxiesUpdated proxies');
+      final updatedFields = <String>[];
+      if (_applyToSni) updatedFields.add('SNI');
+      if (_applyToHost) updatedFields.add('Host');
+      if (_applyToServername) updatedFields.add('servername');
+
+      globalState.showNotifier('${updatedFields.join(", ")} updated for $proxiesUpdated proxies');
 
     } catch (e) {
-      commonPrint.log('Error updating SNI for all proxies: $e');
-      globalState.showNotifier('Failed to update SNI: $e');
+      commonPrint.log('Error updating fields for all proxies: $e');
+      globalState.showNotifier('Failed to update fields: $e');
     }
   }
 
-  void _addOrUpdateSniInProxyBlock(List<String> proxyBlock, String newSni) {
-    if (newSni.isEmpty) {
-      proxyBlock.removeWhere((line) => line.trim().startsWith('sni:'));
+  void _addOrUpdateFieldsInProxyBlock(List<String> proxyBlock, String newValue) {
+    final fieldsToUpdate = <String>[];
+    if (_applyToSni) fieldsToUpdate.add('sni:');
+    if (_applyToHost) fieldsToUpdate.add('Host:');
+    if (_applyToServername) fieldsToUpdate.add('servername:');
+
+    if (newValue.isEmpty) {
+      // Remove all selected fields if value is empty
+      proxyBlock.removeWhere((line) {
+        final trimmed = line.trim();
+        return fieldsToUpdate.any((field) => trimmed.startsWith(field));
+      });
       return;
     }
 
-    bool sniFound = false;
+    // Track which fields were found and updated
+    final foundFields = <String>{};
+
+    // Update existing fields
     for (int i = 0; i < proxyBlock.length; i++) {
-      if (proxyBlock[i].trim().startsWith('sni:')) {
-        proxyBlock[i] = '    sni: ${_escapeYamlValue(newSni)}';
-        sniFound = true;
-        break;
+      final trimmed = proxyBlock[i].trim();
+      for (final field in fieldsToUpdate) {
+        if (trimmed.startsWith(field)) {
+          proxyBlock[i] = '    $field ${_escapeYamlValue(newValue)}';
+          foundFields.add(field);
+          break;
+        }
       }
     }
 
-    if (!sniFound && newSni.isNotEmpty) {
-      int insertIndex = _findSniInsertPosition(proxyBlock);
-      proxyBlock.insert(insertIndex, '    sni: ${_escapeYamlValue(newSni)}');
+    // Add missing fields
+    if (newValue.isNotEmpty) {
+      final missingFields = fieldsToUpdate.where((f) => !foundFields.contains(f)).toList();
+      if (missingFields.isNotEmpty) {
+        int insertIndex = _findFieldInsertPosition(proxyBlock);
+        for (final field in missingFields.reversed) {
+          proxyBlock.insert(insertIndex, '    $field ${_escapeYamlValue(newValue)}');
+        }
+      }
     }
   }
 
-  int _findSniInsertPosition(List<String> proxyBlock) {
+  int _findFieldInsertPosition(List<String> proxyBlock) {
     final basicFields = ['name:', 'type:', 'server:', 'port:'];
     int lastBasicFieldIndex = -1;
 
@@ -312,7 +349,7 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
           if (i + 1 < lines.length) {
             final nextLine = lines[i + 1].trim();
             if (nextLine.isEmpty || nextLine.startsWith('- name:')) {
-              _addOrUpdateSniInProxyBlock(currentProxyBlock, newSni);
+              _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
               newLines.addAll(currentProxyBlock);
               currentProxyBlock.clear();
               inTargetProxy = false;
@@ -330,11 +367,16 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
       await ref.read(currentProfileProvider)?.checkAndUpdate();
       await globalState.appController.applyProfile(silence: true);
 
-      globalState.showNotifier('SNI updated for $proxyName');
+      final updatedFields = <String>[];
+      if (_applyToSni) updatedFields.add('SNI');
+      if (_applyToHost) updatedFields.add('Host');
+      if (_applyToServername) updatedFields.add('servername');
+
+      globalState.showNotifier('${updatedFields.join(", ")} updated for $proxyName');
 
     } catch (e) {
-      commonPrint.log('Error updating SNI for specific proxy: $e');
-      globalState.showNotifier('Failed to update SNI: $e');
+      commonPrint.log('Error updating fields for specific proxy: $e');
+      globalState.showNotifier('Failed to update fields: $e');
     }
   }
 
@@ -433,15 +475,58 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Leave empty to remove SNI override',
+              'Leave empty to remove selected fields',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 8),
+            Text(
+              'Apply value to:',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            CheckboxListTile(
+              title: const Text('SNI field'),
+              value: _applyToSni,
+              onChanged: (value) {
+                setState(() {
+                  _applyToSni = value ?? true;
+                });
+              },
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+            CheckboxListTile(
+              title: const Text('Host field'),
+              value: _applyToHost,
+              onChanged: (value) {
+                setState(() {
+                  _applyToHost = value ?? true;
+                });
+              },
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+            CheckboxListTile(
+              title: const Text('Servername field'),
+              value: _applyToServername,
+              onChanged: (value) {
+                setState(() {
+                  _applyToServername = value ?? true;
+                });
+              },
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
             if (_overrideAllProxies && widget.specificProxyName != null) ...[
               const SizedBox(height: 8),
               Text(
-                'This will override SNI for ALL proxies in the profile',
+                'This will override selected fields for ALL proxies in the profile',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.primary,
                   fontWeight: FontWeight.bold,

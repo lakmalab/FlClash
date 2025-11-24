@@ -1874,55 +1874,36 @@ class AppController {
         throw Exception('No proxy groups found');
       }
 
-      // Show testing progress
-      globalState.showNotifier('Testing all proxies for delays...');
+      // Not testing — just notifying user
+      globalState.showNotifier('Checking existing delay data...');
 
       // Collect all proxies from all groups
       final allProxies = <Proxy>[];
-      String? testUrl;
-
       for (final group in groups) {
         allProxies.addAll(group.all);
-        // Use the first available test URL
-        if (testUrl == null && group.testUrl != null) {
-          testUrl = group.testUrl;
-        }
       }
 
       if (allProxies.isEmpty) {
-        throw Exception('No proxies found to test');
+        throw Exception('No proxies found');
       }
 
-      // Use app setting test URL as fallback
-      final realTestUrl = testUrl ?? _ref.read(appSettingProvider).testUrl;
+      commonPrint.log('=== Using existing delay data for ${allProxies.length} proxies ===');
 
-      commonPrint.log('=== Starting delay test for ${allProxies.length} proxies ===');
-      commonPrint.log('Using test URL: $realTestUrl');
-
-      // Test ALL proxies - this should populate the delay data
-      await delayTest(allProxies, realTestUrl);
-
-      // Wait for delay data to be updated in the providers
-      await Future.delayed(Duration(seconds: 3));
-
-      // Force refresh the groups to ensure delay data is processed
-      await updateGroups();
-
-      // Wait a bit more for the UI providers to update
-      await Future.delayed(Duration(seconds: 2));
-
-      // Debug: Check what delays we have now using the same provider as UI
-      commonPrint.log('=== After testing - Checking delays via getDelayProvider ===');
       int testedCount = 0;
       int invalidCount = 0;
 
       for (final group in groups) {
         for (final proxy in group.all) {
-          final delay = _ref.read(getDelayProvider(proxyName: proxy.name, testUrl: group.testUrl));
+          final delay = _ref.read(
+            getDelayProvider(proxyName: proxy.name, testUrl: group.testUrl),
+          );
+
           commonPrint.log('${proxy.name}: $delay');
+
           if (delay != null && delay > 0) {
             testedCount++;
           }
+
           if (delay == null || delay == 0 || delay == -1 || delay > 5000) {
             invalidCount++;
           }
@@ -1932,9 +1913,11 @@ class AppController {
       commonPrint.log('Valid proxies: $testedCount/${allProxies.length}');
       commonPrint.log('Invalid proxies found: $invalidCount');
 
+      // Only removes based on existing delay data
       await removeInvalidProxies();
-    }, needLoading: true, title: 'Test and Remove Invalid Proxies');
+    }, needLoading: true, title: 'Check and Remove Invalid Proxies');
   }
+
 
   Future<void> overrideSniForAllProxies(String newSni) async {
     await safeRun(() async {
