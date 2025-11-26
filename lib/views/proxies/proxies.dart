@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state.dart';
 import 'SniOverrideDialog.dart';
+import 'SniOverrideDialog2.dart';
 import 'setting.dart';
 import 'tab.dart';
 
@@ -35,6 +36,15 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
           showDialog(
             context: context,
             builder: (context) => SniOverrideDialog(currentSni: ''),
+          );
+        },
+      ),
+      IconButton(
+        icon: const Icon(Icons.ac_unit),
+        onPressed: () {
+          showDialog(
+            context: context,
+            builder: (context) => SniOverrideDialog2(currentSni: ''),
           );
         },
       ),

@@ -43,11 +43,9 @@ class SniHistory extends Notifier<List<String>> {
   Future<void> addSni(String sni) async {
     if (sni.isEmpty) return;
 
-    // Remove if already exists and add to top
     final newList = state.where((item) => item != sni).toList();
     newList.insert(0, sni);
 
-    // Keep only last 10 SNIs
     if (newList.length > 10) {
       newList.removeRange(10, newList.length);
     }
@@ -72,32 +70,30 @@ class SniHistory extends Notifier<List<String>> {
   }
 }
 
-// Provider definition
 final sniHistoryProvider = NotifierProvider<SniHistory, List<String>>(() {
   return SniHistory();
 });
 
-class SniOverrideDialog extends ConsumerStatefulWidget {
+class SniOverrideDialog2 extends ConsumerStatefulWidget {
   final String? specificProxyName;
   final String currentSni;
 
-  const SniOverrideDialog({
+  const SniOverrideDialog2({
     super.key,
     this.specificProxyName,
     required this.currentSni,
   });
 
   @override
-  ConsumerState<SniOverrideDialog> createState() => _SniOverrideDialogState();
+  ConsumerState<SniOverrideDialog2> createState() => _SniOverrideDialogState();
 }
 
-class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
+class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog2> {
   final TextEditingController _sniController = TextEditingController();
   final FocusNode _sniFocusNode = FocusNode();
   bool _overrideAllProxies = true;
   bool _showHistory = false;
 
-  // New toggles for field selection
   bool _applyToSni = true;
   bool _applyToHost = true;
   bool _applyToServername = true;
@@ -121,7 +117,6 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
   Future<void> _applySniOverride() async {
     final newSni = _sniController.text.trim();
 
-    // Check if at least one field is selected
     if (!_applyToSni && !_applyToHost && !_applyToServername) {
       globalState.showNotifier('Please select at least one field to update');
       return;
@@ -133,7 +128,6 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
       await _overrideSniForSpecificProxy(widget.specificProxyName!, newSni);
     }
 
-    // Add to history if not empty
     if (newSni.isNotEmpty) {
       await ref.read(sniHistoryProvider.notifier).addSni(newSni);
     }
@@ -155,76 +149,51 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
 
       final content = await file.readAsString();
       final lines = content.split('\n');
-      final newLines = <String>[];
 
-      bool inProxiesSection = false;
-      bool inProxyBlock = false;
-      List<String> currentProxyBlock = [];
       int proxiesUpdated = 0;
+      int i = 0;
 
-      for (var i = 0; i < lines.length; i++) {
+      while (i < lines.length) {
         final line = lines[i];
-        final trimmedLine = line.trim();
+        final trimmed = line.trim();
 
-        if (trimmedLine == 'proxies:') {
-          inProxiesSection = true;
-          inProxyBlock = false;
-          newLines.add(line);
-          continue;
-        }
+        // Look for proxy definitions: "- name:" at any indentation level
+        if (trimmed.startsWith('- name:')) {
+          // Found a proxy, now find where this proxy block ends
+          final proxyStartIndex = i;
+          final baseIndent = line.indexOf('-');
+          i++; // Move to next line
 
-        if (inProxiesSection && trimmedLine.isNotEmpty && !line.startsWith(' ')) {
-          if (inProxyBlock) {
-            _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
-            newLines.addAll(currentProxyBlock);
-            currentProxyBlock.clear();
-            proxiesUpdated++;
-          }
-          inProxiesSection = false;
-          inProxyBlock = false;
-          newLines.add(line);
-          continue;
-        }
+          // Collect all lines that belong to this proxy
+          while (i < lines.length) {
+            final nextLine = lines[i];
+            final nextTrimmed = nextLine.trim();
 
-        if (inProxiesSection) {
-          if (trimmedLine.startsWith('- name:')) {
-            if (inProxyBlock) {
-              _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
-              newLines.addAll(currentProxyBlock);
-              currentProxyBlock.clear();
-              proxiesUpdated++;
+            // Empty line - might be within the proxy block
+            if (nextTrimmed.isEmpty) {
+              i++;
+              continue;
             }
 
-            currentProxyBlock = [line];
-            inProxyBlock = true;
-          } else if (inProxyBlock) {
-            currentProxyBlock.add(line);
+            final nextIndent = nextLine.length - nextLine.trimLeft().length;
 
-            if (i + 1 < lines.length) {
-              final nextLine = lines[i + 1].trim();
-              if (nextLine.isEmpty || nextLine.startsWith('- name:')) {
-                _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
-                newLines.addAll(currentProxyBlock);
-                currentProxyBlock.clear();
-                inProxyBlock = false;
-                proxiesUpdated++;
-              }
+            // If we hit another item at the same level or less indented, proxy block ends
+            if (nextIndent <= baseIndent) {
+              break;
             }
-          } else {
-            newLines.add(line);
+
+            i++;
           }
+
+          // Now process this proxy block (from proxyStartIndex to i-1)
+          _updateProxyBlock(lines, proxyStartIndex, i - 1, newSni);
+          proxiesUpdated++;
         } else {
-          newLines.add(line);
+          i++;
         }
       }
 
-      if (inProxyBlock) {
-        _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
-        newLines.addAll(currentProxyBlock);
-        proxiesUpdated++;
-      }
-
-      final newContent = newLines.join('\n');
+      final newContent = lines.join('\n');
       await file.writeAsString(newContent);
 
       await ref.read(currentProfileProvider)?.checkAndUpdate();
@@ -243,67 +212,67 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
     }
   }
 
-  void _addOrUpdateFieldsInProxyBlock(List<String> proxyBlock, String newValue) {
-    final fieldsToUpdate = <String>[];
-    if (_applyToSni) fieldsToUpdate.add('sni:');
-    if (_applyToHost) fieldsToUpdate.add('host:');
-    if (_applyToServername) fieldsToUpdate.add('servername:');
+  void _updateProxyBlock(List<String> lines, int startIndex, int endIndex, String newValue) {
+    final fieldsToUpdate = <String, String>{};
+    if (_applyToSni) fieldsToUpdate['sni:'] = 'sni';
+    if (_applyToHost) fieldsToUpdate['Host:'] = 'Host';
+    if (_applyToServername) fieldsToUpdate['servername:'] = 'servername';
+
+    // Get base indentation (indentation of the properties, not the "- name:" line)
+    String propertyIndent = '  ';
+    for (int i = startIndex + 1; i <= endIndex; i++) {
+      final line = lines[i];
+      if (line.trim().isNotEmpty && !line.trim().startsWith('-')) {
+        propertyIndent = line.substring(0, line.length - line.trimLeft().length);
+        break;
+      }
+    }
 
     if (newValue.isEmpty) {
-      // Remove all selected fields if value is empty
-      proxyBlock.removeWhere((line) {
-        final trimmed = line.trim().toLowerCase();
-        return fieldsToUpdate.any((field) => trimmed.startsWith(field));
-      });
+      // Remove the fields
+      for (int i = endIndex; i > startIndex; i--) {
+        final trimmed = lines[i].trim();
+        if (fieldsToUpdate.keys.any((field) => trimmed.startsWith(field))) {
+          lines.removeAt(i);
+        }
+      }
       return;
     }
 
-    // Track which fields were found and updated
+    // Track found fields
     final foundFields = <String>{};
 
     // Update existing fields
-    for (int i = 0; i < proxyBlock.length; i++) {
-      final trimmed = proxyBlock[i].trim().toLowerCase();
-      for (final field in fieldsToUpdate) {
-        if (trimmed.startsWith(field)) {
-          // Preserve original indentation and case
-          final originalLine = proxyBlock[i];
-          final indent = originalLine.substring(0, originalLine.indexOf(originalLine.trim()));
-          proxyBlock[i] = '$indent$field ${_escapeYamlValue(newValue)}';
-          foundFields.add(field);
+    for (int i = startIndex + 1; i <= endIndex && i < lines.length; i++) {
+      final trimmed = lines[i].trim();
+      for (final entry in fieldsToUpdate.entries) {
+        if (trimmed.startsWith(entry.key)) {
+          lines[i] = '$propertyIndent${entry.key} ${_escapeYamlValue(newValue)}';
+          foundFields.add(entry.key);
           break;
         }
       }
     }
 
     // Add missing fields
-    if (newValue.isNotEmpty) {
-      final missingFields = fieldsToUpdate.where((f) => !foundFields.contains(f)).toList();
-      if (missingFields.isNotEmpty) {
-        int insertIndex = _findFieldInsertPosition(proxyBlock);
-        for (final field in missingFields.reversed) {
-          final indent = '    '; // Standard 4-space indent for YAML
-          proxyBlock.insert(insertIndex, '$indent$field ${_escapeYamlValue(newValue)}');
+    final missingFields = fieldsToUpdate.keys.where((f) => !foundFields.contains(f)).toList();
+    if (missingFields.isNotEmpty) {
+      // Find position after basic fields (name, type, server, port)
+      int insertPos = startIndex + 1;
+      final basicFields = ['name:', 'type:', 'server:', 'port:'];
+
+      for (int i = startIndex + 1; i <= endIndex && i < lines.length; i++) {
+        final trimmed = lines[i].trim();
+        if (basicFields.any((f) => trimmed.startsWith(f))) {
+          insertPos = i + 1;
         }
       }
-    }
-  }
 
-  int _findFieldInsertPosition(List<String> proxyBlock) {
-    final basicFields = ['name:', 'type:', 'server:', 'port:'];
-    int lastBasicFieldIndex = -1;
-
-    for (int i = 0; i < proxyBlock.length; i++) {
-      final line = proxyBlock[i].trim();
-      for (final field in basicFields) {
-        if (line.startsWith(field)) {
-          lastBasicFieldIndex = i;
-          break;
-        }
+      // Insert missing fields
+      for (int j = 0; j < missingFields.length; j++) {
+        lines.insert(insertPos + j, '$propertyIndent${missingFields[j]} ${_escapeYamlValue(newValue)}');
       }
     }
-
-    return lastBasicFieldIndex + 1;
   }
 
   Future<void> _overrideSniForSpecificProxy(String proxyName, String newSni) async {
@@ -318,64 +287,55 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
 
       final content = await file.readAsString();
       final lines = content.split('\n');
-      final newLines = <String>[];
 
-      bool inTargetProxy = false;
-      bool inProxyBlock = false;
-      List<String> currentProxyBlock = [];
-      bool proxyFound = false;
+      bool found = false;
+      int i = 0;
 
-      for (var i = 0; i < lines.length; i++) {
+      while (i < lines.length) {
         final line = lines[i];
-        final trimmedLine = line.trim();
+        final trimmed = line.trim();
 
-        if (trimmedLine == 'proxies:') {
-          inTargetProxy = false;
-          inProxyBlock = false;
-          newLines.add(line);
-          continue;
-        }
-
-        if (!inTargetProxy && trimmedLine.startsWith('- name:')) {
+        if (trimmed.startsWith('- name:')) {
           final namePart = line.split('name:').last.trim();
           final currentProxyName = _extractProxyName(namePart);
 
           if (currentProxyName == proxyName) {
-            inTargetProxy = true;
-            inProxyBlock = true;
-            proxyFound = true;
-            currentProxyBlock = [line];
-            continue;
+            // Found the target proxy
+            final proxyStartIndex = i;
+            final baseIndent = line.indexOf('-');
+            i++;
+
+            while (i < lines.length) {
+              final nextLine = lines[i];
+              final nextTrimmed = nextLine.trim();
+
+              if (nextTrimmed.isEmpty) {
+                i++;
+                continue;
+              }
+
+              final nextIndent = nextLine.length - nextLine.trimLeft().length;
+              if (nextIndent <= baseIndent) {
+                break;
+              }
+
+              i++;
+            }
+
+            _updateProxyBlock(lines, proxyStartIndex, i - 1, newSni);
+            found = true;
+            break;
           }
         }
-
-        if (inTargetProxy && inProxyBlock) {
-          currentProxyBlock.add(line);
-
-          // Check if this is the end of the proxy block
-          final isEndOfBlock = (i + 1 >= lines.length) ||
-              lines[i + 1].trim().isEmpty ||
-              lines[i + 1].trim().startsWith('- name:');
-
-          if (isEndOfBlock) {
-            _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
-            newLines.addAll(currentProxyBlock);
-            currentProxyBlock.clear();
-            inTargetProxy = false;
-            inProxyBlock = false;
-          }
-        } else {
-          newLines.add(line);
-        }
+        i++;
       }
 
-      // Handle case where proxy block continues to end of file
-      if (inProxyBlock && currentProxyBlock.isNotEmpty) {
-        _addOrUpdateFieldsInProxyBlock(currentProxyBlock, newSni);
-        newLines.addAll(currentProxyBlock);
+      if (!found) {
+        globalState.showNotifier('Proxy "$proxyName" not found');
+        return;
       }
 
-      final newContent = newLines.join('\n');
+      final newContent = lines.join('\n');
       await file.writeAsString(newContent);
 
       await ref.read(currentProfileProvider)?.checkAndUpdate();
@@ -386,11 +346,7 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
       if (_applyToHost) updatedFields.add('Host');
       if (_applyToServername) updatedFields.add('servername');
 
-      if (proxyFound) {
-        globalState.showNotifier('${updatedFields.join(", ")} updated for $proxyName');
-      } else {
-        globalState.showNotifier('Proxy $proxyName not found');
-      }
+      globalState.showNotifier('${updatedFields.join(", ")} updated for $proxyName');
 
     } catch (e) {
       commonPrint.log('Error updating fields for specific proxy: $e');
@@ -432,7 +388,7 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
     return AlertDialog(
       title: Text(widget.specificProxyName != null
           ? 'Override SNI for ${widget.specificProxyName}'
-          : 'Override SNI for All Proxies'),
+          : 'Override*'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -551,7 +507,6 @@ class _SniOverrideDialogState extends ConsumerState<SniOverrideDialog> {
                 ),
               ),
             ],
-            // SNI History Section
             if (_showHistory && sniHistory.isNotEmpty) ...[
               const SizedBox(height: 16),
               const Divider(),
